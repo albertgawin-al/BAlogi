@@ -8,3 +8,4 @@ Stockpiler.dist
 .vs
 env*
 *.zip
+serviceKey.json

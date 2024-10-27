@@ -1,26 +1,38 @@
-import os
-import os.path
-import time
-from tkinter import *
-from tkinter import ttk
-
-from PIL import ImageTk, ImageGrab, Image
-import logging
-import datetime
-from pynput.mouse import Controller
 import glob
 import cv2
 import numpy as np
 from global_hotkeys import *
 import csv
 import re
+import datetime
 from requests.sessions import Request
+from pynput.mouse import Controller
 import xlsxwriter
+import time
 from tksheet import Sheet
 import requests
 import threading
+import logging
 import pygetwindow as gw
-# import keyboard
+import firebase_admin
+from firebase_admin import credentials, firestore
+import os
+import discord
+from discord.ext import commands
+from tkinter import *
+from tkinter import ttk
+from PIL import ImageTk, ImageGrab, Image
+
+import requests
+
+# Replace with your webhook URL
+WEBHOOK_URL = 'https://discord.com/api/webhooks/1297785276432650303/e2PbanrjTkAcbc-Y1GCAYOzAqNMbU9JQRtVBYaJbbx_1VVRN7AwT_a8xeLulCAdjF7WZ/messages/1298197928745242696'
+
+
+# Initialize Firebase
+cred = credentials.Certificate('serviceKey.json')
+app = firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 bestTextScale = 1.0
 bestIconScale = 1.0
@@ -1015,22 +1027,7 @@ def ItemScan(screen, garbage):
 			if ThisStockpileName in ("Seaport","Storage Depot","Outpost","Town Base","Relic Base","Bunker Base","Encampment","Safe House"):
 				ThisStockpileName = "Public"
 
-			if menu.CSVExport.get() == 1:
-				stockpilefile = open("Stockpiles//" + ThisStockpileName + ".csv", 'w')
-				stockpilefile.write(ThisStockpileName + ",\n")
-				stockpilefile.write(FoundStockpileTypeName + ",\n")
-				stockpilefile.write(str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")) + ",\n")
-				stockpilefile.close()
-
-				# Writing to both csv and xlsx, only the quantity and name is written
-				# If more elements from items.data are added to stockpilecontents, they could be added to these exports as fields
-				with open("Stockpiles//" + ThisStockpileName + ".csv", 'a') as fp:
-					# fp.write('\n'.join('{},{},{}'.format(x[0],x[1],x[2]) for x in stockpilecontents))
-					############### THIS ONE DOES IN REGULAR ORDER ############
-					# fp.write('\n'.join('{},{}'.format(x[1],x[2]) for x in stockpilecontents))
-					############### THIS ONE DOES IN SORTED ORDER #############
-					fp.write('\n'.join('{},{}'.format(x[1], x[2]) for x in items.sortedcontents))
-				fp.close()
+			
 
 
 			if menu.updateBot.get() == 1 and ThisStockpileName != "Public":
@@ -1043,8 +1040,6 @@ def ItemScan(screen, garbage):
 				for x in items.sortedcontents:
 					data.append([x[1], x[2]])
 				requestObj["data"] = data
-
-				# print("Bot Data", data)
 
 				try:
 					r = requests.post(menu.BotHost.get(), json=requestObj, timeout=10)
@@ -1063,25 +1058,11 @@ def ItemScan(screen, garbage):
 					print("There was an error connecting to the Bot")
 					print("Exception: ", e)
 
-
-			if menu.XLSXExport.get() == 1:
-				workbook = xlsxwriter.Workbook("Stockpiles//" + ThisStockpileName + ".xlsx")
-				worksheet = workbook.add_worksheet()
-				worksheet.write(0, 0, ThisStockpileName)
-				worksheet.write(1, 0, FoundStockpileTypeName)
-				worksheet.write(2, 0, str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-				row = 3
-				for col, data in enumerate(items.sortedcontents):
-					# print("col", col, " data", data)
-					worksheet.write(row + col, 0, data[1])
-					worksheet.write(row + col, 1, data[2])
-				workbook.close()
-			print(datetime.datetime.now()-start)
-			print("Items Checked:",checked)
 			items.slimcontents = items.sortedcontents
 			for sublist in items.slimcontents:
 				del sublist[3:5]
 			ResultSheet.set_sheet_data(data=items.slimcontents)
+			send_data_to_firebase(items.slimcontents, ThisStockpileName)
 		else:
 			popup("NoStockpile")
 
@@ -1092,42 +1073,59 @@ def LearnOrNot():
 	else:
 		Learn(0, "img")
 
+def fetch_group_names():
+	group_names = []
+	try:
+		groups = db.collection('group').get()
+		for group in groups:
+			group_data = group.to_dict()
+			name = group.id
+			stockpiles = group_data.get('stockpiles', [])
+			for stockpile in stockpiles:
+				group_names.append(f"{name} - {stockpile}")
+	except Exception as e:
+		print("Error fetching group names from Firebase:", e)
+	print(group_names)
+	return group_names
 
 def newstockpopup(image):
-	# global stockpilename
-	global PopupWindow
-	global StockpileNameEntry
-	root_x = StockpilerWindow.winfo_rootx()
-	root_y = StockpilerWindow.winfo_rooty()
-	if root_x == root_y == -32000:
-		win_x = 100
-		win_y = 100
-	else:
-		win_x = root_x - 20
-		win_y = root_y + 125
-	location = "+" + str(win_x) + "+" + str(win_y)
-	PopupWindow = Toplevel(StockpilerWindow)
-	PopupWindow.geometry(location)
-	PopupFrame = ttk.Frame(PopupWindow)
-	PopupWindow.resizable(False, False)
-	PopupFrame.pack()
-	PopupWindow.grab_set()
-	PopupWindow.focus_force()
-	im = Image.fromarray(image)
-	tkimage = ImageTk.PhotoImage(im)
-	NewStockpileLabel = ttk.Label(PopupFrame, text="Looks like a new stockpile.", style="TLabel")
-	NewStockpileLabel.grid(row=2, column=0)
-	StockpileNameImage = ttk.Label(PopupFrame, image=tkimage, style="TLabel")
-	StockpileNameImage.image = tkimage
-	StockpileNameImage.grid(row=5, column=0)
-	StockpileNameLabel = ttk.Label(PopupFrame, text="What is the name of the stockpile?", style="TLabel")
-	StockpileNameLabel.grid(row=7, column=0)
-	StockpileNameEntry = ttk.Entry(PopupFrame)
-	StockpileNameEntry.grid(row=8, column=0)
-	OKButton = ttk.Button(PopupFrame, text="OK", command=lambda: NameAndDestroy("blah"))
-	PopupWindow.bind('<Return>', NameAndDestroy)
-	StockpileNameEntry.focus()
-	OKButton.grid(row=10, column=0, sticky="NSEW")
+    global PopupWindow
+    global StockpileNameEntry
+    root_x = StockpilerWindow.winfo_rootx()
+    root_y = StockpilerWindow.winfo_rooty()
+    if root_x == root_y == -32000:
+        win_x = 100
+        win_y = 100
+    else:
+        win_x = root_x - 20
+        win_y = root_y + 125
+    location = "+" + str(win_x) + "+" + str(win_y)
+    PopupWindow = Toplevel(StockpilerWindow)
+    PopupWindow.geometry(location)
+    PopupFrame = ttk.Frame(PopupWindow)
+    PopupWindow.resizable(False, False)
+    PopupFrame.pack()
+    PopupWindow.grab_set()
+    PopupWindow.focus_force()
+    im = Image.fromarray(image)
+    tkimage = ImageTk.PhotoImage(im)
+    NewStockpileLabel = ttk.Label(PopupFrame, text="Looks like a new stockpile.", style="TLabel")
+    NewStockpileLabel.grid(row=2, column=0)
+    StockpileNameImage = ttk.Label(PopupFrame, image=tkimage, style="TLabel")
+    StockpileNameImage.image = tkimage
+    StockpileNameImage.grid(row=5, column=0)
+
+    # Fetch group names from Firebase and generate stockpile names
+    stockpile_choices = fetch_group_names()
+    StockpileNameLabel = ttk.Label(PopupFrame, text="What is the name of the stockpile?", style="TLabel")
+    StockpileNameLabel.grid(row=7, column=0)
+    StockpileNameEntry = ttk.Combobox(PopupFrame, values=stockpile_choices, state="readonly")
+    StockpileNameEntry.set("Select a stockpile")  # Set default text
+    StockpileNameEntry.grid(row=8, column=0)
+    OKButton = ttk.Button(PopupFrame, text="OK", command=lambda: NameAndDestroy("blah"))
+    PopupWindow.bind('<Return>', NameAndDestroy)
+    StockpileNameEntry.focus()
+    OKButton.grid(row=10, column=0, sticky="NSEW")
 
 
 def popup(type):
@@ -1200,40 +1198,6 @@ def Destroy(event):
 	PopupWindow.destroy()
 
 
-def CSVExport():
-	if items.stockpilecontents != []:
-		stockpilefile = open("Stockpiles//" + items.ThisStockpileName + ".csv", 'w')
-		stockpilefile.write(items.ThisStockpileName + ",\n")
-		stockpilefile.write(items.FoundStockpileTypeName + ",\n")
-		stockpilefile.write(str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")) + ",\n")
-		stockpilefile.close()
-
-		# Writing to both csv and xlsx, only the quantity and name is written
-		# If more elements from items.data are added to stockpilecontents, they could be added to these exports as fields
-		with open("Stockpiles//" + items.ThisStockpileName + ".csv", 'a') as fp:
-			# fp.write('\n'.join('{},{},{}'.format(x[0],x[1],x[2]) for x in stockpilecontents))
-			############### THIS ONE DOES IN REGULAR ORDER ############
-			# fp.write('\n'.join('{},{}'.format(x[1],x[2]) for x in stockpilecontents))
-			############### THIS ONE DOES IN SORTED ORDER #############
-			fp.write('\n'.join('{},{}'.format(x[1], x[2]) for x in items.sortedcontents))
-		fp.close()
-
-
-def XLSXExport():
-	if items.stockpilecontents != []:
-		workbook = xlsxwriter.Workbook("Stockpiles//" + items.ThisStockpileName + ".xlsx")
-		worksheet = workbook.add_worksheet()
-		worksheet.write(0, 0, items.ThisStockpileName)
-		worksheet.write(1, 0, items.FoundStockpileTypeName)
-		worksheet.write(2, 0, str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-		row = 3
-		for col, data in enumerate(items.sortedcontents):
-			# print("col", col, " data", data)
-			worksheet.write(row + col, 0, data[1])
-			worksheet.write(row + col, 1, data[2])
-		workbook.close()
-
-
 def _on_mousewheel(event):
 	FilterCanvas.yview_scroll(int(-1*(event.delta/120)), "units")
 
@@ -1299,40 +1263,101 @@ ResultSheet.enable_bindings()
 ResultSheet.pack(expand=True, fill='both')
 ResultSheet.set_options(table_bg="grey75", header_bg="grey55", index_bg="grey55", top_left_bg="grey15", frame_bg="grey15")
 
-def SaveFilter():
-	os.remove("Filter.csv")
-	with open("Filter.csv", "w") as filterfile:
-		filterfile.write("Number,Filter\n")
-		for line in range(len(items.data)):
-			try:
-				filterfile.write(str(items.data[line][0]) + "," + str(items.data[line][19]) + "\n")
-			except Exception as e:
-				print("Exception: ", e)
-				logging.info(
-					str(datetime.datetime.now()) + " Failed loading filter on line: " + str(line), str(e))
-				print("Fail", line)
+def get_items_req_from_firebase(stockpile_name):
+    try:
+        doc_ref = db.collection("group").document(stockpile_name)
+        doc = doc_ref.get()
+        if doc.exists:
+            return doc.to_dict().get('itemsReq', {})
+        else:
+            print(f"No such document: {stockpile_name}")
+            return {}
+    except Exception as e:
+        print("An error occurred while retrieving data from Firebase.")
+        print(e)
+        return {}
 
-	with open("Config.txt", "w") as exportfile:
-		exportfile.write(str(menu.CSVExport.get()) + "\n")
-		exportfile.write(str(menu.XLSXExport.get()) + "\n")
-		exportfile.write(str(menu.ImgExport.get()) + "\n")
-		exportfile.write(str(menu.Set.get()) + "\n")
-		exportfile.write(str(menu.Learning.get()) + "\n")
-		exportfile.write(str(menu.updateBot.get()) + "\n")
-		exportfile.write(str(menu.BotHost.get()) + "\n")
-		exportfile.write(str(menu.BotPassword.get()) + "\n")
-		exportfile.write(str(menu.BotGuildID.get()) + "\n")
-		exportfile.write(str(menu.grabhotkey.get()) + "\n")
-		exportfile.write(str(menu.scanhotkey.get()) + "\n")
-		menu.grabhotkeystring = menu.grabhotkey.get()
-		menu.scanhotkeystring = menu.scanhotkey.get()
-		exportfile.write(str(menu.grabshift.get()) + str(menu.grabctrl.get()) + str(menu.grabalt.get()) + "\n")
-		exportfile.write(str(menu.scanshift.get()) + str(menu.scanctrl.get()) + str(menu.scanalt.get()) + "\n")
-		exportfile.write(str(menu.experimentalResizing.get()) + "\n")
-	menu.grabmods = str(menu.grabshift.get()) + str(menu.grabctrl.get()) + str(menu.grabalt.get())
-	menu.scanmods = str(menu.scanshift.get()) + str(menu.scanctrl.get()) + str(menu.scanalt.get())
-	SetHotkeys("")
-	CreateButtons("")
+def generate_message(city, stockpiles, items, items_req):
+    stockpiles = ', '.join(stockpiles)
+    items_message = '\n'.join([f"{item}: {quantity}/{items_req.get(item, 'N/A')}" for item, quantity in items.items() if item in items_req])
+
+    return f"""
+**Stockpiles:** {stockpiles}
+
+**Items:**
+{items_message}
+    """
+
+def send_discord_message(message):
+    data = {
+        "content": message,
+        "username": "BAlogi Bot"
+    }
+    response = requests.patch(WEBHOOK_URL, json=data)
+    if response.status_code == 200 or response.status_code == 204:
+        print("Message sent successfully.")
+    else:
+        print(f"Failed to send message. Status code: {response.status_code}")
+
+def send_data_to_firebase(data, stockpile_name):
+	try:
+		items = {item[0]: item[2] for item in data}
+
+		collection_ref = db.collection("stockpile").document(stockpile_name)
+		collection_ref.update({ 'items': items })
+		print("Data sent to Firebase successfully.")
+
+		city_name = stockpile_name.split(' - ')[0]
+		items_req = get_items_req_from_firebase(city_name)
+		message = generate_message(city_name, ['BA1', 'BA2'], items, items_req)
+		send_discord_message(message)
+	except Exception as e:
+		print("Error sending data to Firebase:", e)
+
+def SaveFilter():
+    os.remove("Filter.csv")
+    filter_data = []
+    with open("Filter.csv", "w") as filterfile:
+        filterfile.write("Number,Filter\n")
+        for line in range(len(items.data)):
+            try:
+                filter_entry = {
+                    "Number": items.data[line][0],
+                    "Filter": items.data[line][19]
+                }
+                filter_data.append(filter_entry)
+                filterfile.write(f"{filter_entry['Number']},{filter_entry['Filter']}\n")
+            except Exception as e:
+                print("Exception: ", e)
+                logging.info(
+                    str(datetime.datetime.now()) + " Failed loading filter on line: " + str(line), str(e))
+                print("Fail", line)
+
+    config_data = {
+        "CSVExport": menu.CSVExport.get(),
+        "XLSXExport": menu.XLSXExport.get(),
+        "ImgExport": menu.ImgExport.get(),
+        "Set": menu.Set.get(),
+        "Learning": menu.Learning.get(),
+        "updateBot": menu.updateBot.get(),
+        "BotHost": menu.BotHost.get(),
+        "BotPassword": menu.BotPassword.get(),
+        "BotGuildID": menu.BotGuildID.get(),
+        "grabhotkey": menu.grabhotkey.get(),
+        "scanhotkey": menu.scanhotkey.get(),
+        "grabmods": str(menu.grabshift.get()) + str(menu.grabctrl.get()) + str(menu.grabalt.get()),
+        "scanmods": str(menu.scanshift.get()) + str(menu.scanctrl.get()) + str(menu.scanalt.get()),
+        "experimentalResizing": menu.experimentalResizing.get()
+    }
+
+    with open("Config.txt", "w") as exportfile:
+        for key, value in config_data.items():
+            exportfile.write(f"{value}\n")
+
+    menu.grabhotkeystring = menu.grabhotkey.get()
+    menu.scanhotkeystring = menu.scanhotkey.get()
+    SetHotkeys("")
+    CreateButtons("")
 
 
 def CreateButtons(self):
